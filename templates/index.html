@@ -1,1 +1,271 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Тест из TXT файла</title>
+
+    <!-- Bootstrap -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <style>
+        body { background: #f5f5f5; }
+        .question-card {
+            border-radius: 12px;
+            padding: 20px;
+            background: white;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.07);
+        }
+        .option-btn { text-align: left; }
+        .bold { font-weight: bold; }
+        .correct { background: #c9ffd1 !important; }
+        .wrong { background: #ffd1d1 !important; }
+    </style>
+</head>
+<body class="p-4">
+
+<div class="container">
+
+    <h2 class="text-center mb-4">Тестирование из TXT файла</h2>
+
+    <!-- Upload -->
+    <div class="card p-3 mb-4">
+        <h5>Загрузить тест (.txt)</h5>
+        <input type="file" id="fileInput" accept=".txt" class="form-control">
+        <button class="btn btn-primary mt-3 w-100" onclick="uploadTXT()">Загрузить</button>
+    </div>
+
+    <!-- Test -->
+    <div id="quizBlock" style="display:none;">
+        <div class="question-card mb-4">
+            <h4 id="questionNumber"></h4>
+            <p id="questionText" class="bold"></p>
+
+            <div id="options"></div>
+
+            <button class="btn btn-success mt-3 w-100" onclick="nextQuestion()">Следующий вопрос</button>
+        </div>
+    </div>
+
+    <!-- Results -->
+    <div id="resultBlock" style="display:none;">
+        <div class="question-card">
+            <h3 class="mb-3">Ваш результат</h3>
+            <p id="scoreText" class="fw-bold"></p>
+
+            <button class="btn btn-warning w-100 mt-2" onclick="downloadPDF()">Скачать PDF</button>
+            <button class="btn btn-secondary w-100 mt-2" onclick="resetTest()">Пройти заново</button>
+        </div>
+    </div>
+
+</div>
+
+<!-- html2pdf -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+
+<script>
+
+let questions = [];
+let currentIndex = 0;
+let answers = {};
+let loaded = false;
+
+// --------------------------------------------------------------
+// Random shuffle function
+// --------------------------------------------------------------
+function shuffle(array) {
+    return array.sort(() => Math.random() - 0.5);
+}
+
+// --------------------------------------------------------------
+// Upload TXT
+// --------------------------------------------------------------
+function uploadTXT() {
+    let file = document.getElementById("fileInput").files[0];
+    if (!file) return alert("Выберите TXT файл");
+
+    let formData = new FormData();
+    formData.append("file", file);
+
+    fetch("/upload", {
+        method: "POST",
+        body: formData
+    })
+        .then(r => r.json())
+        .then(data => {
+
+            if (data.error) return alert(data.error);
+
+            questions = data.questions;
+
+            // 🔥 Randomize questions
+            questions = shuffle(questions);
+
+            // 🔥 Randomize options inside each question
+            questions.forEach(q => {
+                let combined = q.options.map((opt, i) => ({
+                    text: opt,
+                    isCorrect: q.correct.includes(i)
+                }));
+
+                combined = shuffle(combined);
+
+                q.options = combined.map(x => x.text);
+                q.correct = combined.map((x, i) => x.isCorrect ? i : -1).filter(i => i >= 0);
+            });
+
+            currentIndex = 0;
+            answers = {};
+
+            saveProgress();
+            showQuestion();
+
+            document.getElementById("quizBlock").style.display = "block";
+            loaded = true;
+        });
+}
+
+// --------------------------------------------------------------
+// Show question
+// --------------------------------------------------------------
+function showQuestion() {
+    let q = questions[currentIndex];
+
+    document.getElementById("questionNumber").innerText =
+        `Вопрос ${currentIndex + 1} из ${questions.length}`;
+
+    document.getElementById("questionText").innerText = q.text;
+
+    let html = "";
+
+    q.options.forEach((opt, idx) => {
+        html += `
+            <div class="form-check">
+                <input class="form-check-input"
+                       type="checkbox"
+                       name="option"
+                       value="${opt}"
+                       data-index="${idx}"
+                       onchange="checkInstant(${idx})">
+                <label class="form-check-label">${opt}</label>
+            </div>
+        `;
+    });
+
+    document.getElementById("options").innerHTML = html;
+}
+
+// --------------------------------------------------------------
+// Instant check (リアルタイム判断)
+// --------------------------------------------------------------
+function checkInstant(optIndex) {
+    let q = questions[currentIndex];
+    let isCorrect = q.correct.includes(optIndex);
+
+    let inputs = document.querySelectorAll("input[name='option']");
+    let target = inputs[optIndex];
+
+    if (isCorrect) {
+        target.parentElement.classList.add("correct");
+    } else {
+        target.parentElement.classList.add("wrong");
+    }
+}
+
+// --------------------------------------------------------------
+// Next question
+// --------------------------------------------------------------
+function nextQuestion() {
+
+    let selected = [...document.querySelectorAll("input[name='option']:checked")]
+        .map(i => i.value);
+
+    fetch("/submit_answer", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            question_index: currentIndex,
+            selected_options: selected
+        })
+    })
+        .then(r => r.json())
+        .then(res => {
+            answers[currentIndex] = selected;
+            saveProgress();
+
+            currentIndex++;
+
+            if (currentIndex >= questions.length) showResults();
+            else showQuestion();
+        });
+}
+
+// --------------------------------------------------------------
+// Show results
+// --------------------------------------------------------------
+function showResults() {
+    fetch("/get_results")
+        .then(r => r.json())
+        .then(res => {
+            document.getElementById("quizBlock").style.display = "none";
+            document.getElementById("resultBlock").style.display = "block";
+
+            document.getElementById("scoreText").innerText =
+                `Вы набрали ${res.score} из ${res.total_questions} (${res.percentage}%)`;
+
+            saveProgress();
+        });
+}
+
+// --------------------------------------------------------------
+// Progress save/load
+// --------------------------------------------------------------
+function saveProgress() {
+    localStorage.setItem("quiz_progress", JSON.stringify({
+        questions,
+        answers,
+        currentIndex,
+        loaded
+    }));
+}
+
+function loadProgress() {
+    let saved = localStorage.getItem("quiz_progress");
+    if (!saved) return;
+
+    saved = JSON.parse(saved);
+
+    questions = saved.questions || [];
+    answers = saved.answers || {};
+    currentIndex = saved.currentIndex || 0;
+    loaded = saved.loaded || false;
+
+    if (loaded && questions.length > 0) {
+        showQuestion();
+        document.getElementById("quizBlock").style.display = "block";
+    }
+}
+
+loadProgress();
+
+// --------------------------------------------------------------
+// PDF download
+// --------------------------------------------------------------
+function downloadPDF() {
+    let element = document.getElementById("resultBlock");
+
+    html2pdf().from(element).save(`result.pdf`);
+}
+
+// --------------------------------------------------------------
+// Reset
+// --------------------------------------------------------------
+function resetTest() {
+    localStorage.removeItem("quiz_progress");
+    location.reload();
+}
+
+</script>
+
+</body>
+</html>
 
